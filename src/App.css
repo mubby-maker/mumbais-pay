@@ -1,0 +1,1380 @@
+import React, { useEffect, useState } from "react";
+import { supabase } from "./supabaseClient";
+import "./App.css";
+
+const PLANS = [
+  {
+    id: "standard",
+    name: "Standard",
+    fee: 1,
+    daily: 1,
+    days: 30,
+    total: 30,
+  },
+  {
+    id: "premium",
+    name: "Premium",
+    fee: 5,
+    daily: 7,
+    days: 15,
+    total: 105,
+  },
+];
+
+const ADMIN_ID = "ec9063ad-107e-4592-8cb4-a87c602637ba";
+
+const money = (value) => "$" + Number(value || 0).toFixed(2);
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [screen, setScreen] = useState("home");
+  const [loading, setLoading] = useState(true);
+  const [admin, setAdmin] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  const [settings, setSettings] = useState({
+    minimum_withdrawal: "10.00",
+    referral_bonus: "0.50",
+    usdt_trc20_address: "",
+    usdt_bep20_address: "",
+  });
+
+  const [activities, setActivities] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [claims, setClaims] = useState([]);
+  const [cycles, setCycles] = useState([]);
+  const [ledger, setLedger] = useState([]);
+  const [referrals, setReferrals] = useState([]);
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [username, setUsername] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [referralCode, setReferralCode] = useState("");
+
+  const [selectedPlan, setSelectedPlan] = useState("standard");
+  const [network, setNetwork] = useState("TRC20");
+  const [txHash, setTxHash] = useState("");
+  const [walletAddress, setWalletAddress] = useState("");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+
+  const [adminTab, setAdminTab] = useState("payments");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const referral = params.get("ref");
+    if (referral) setReferralCode(referral);
+
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user || null);
+      if (data.session?.user) loadUserData(data.session.user);
+      else setLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        const currentUser = session?.user || null;
+        setUser(currentUser);
+
+        if (currentUser) {
+          loadUserData(currentUser);
+        } else {
+          setProfile(null);
+          setAdmin(false);
+          setLoading(false);
+          setScreen("home");
+        }
+      }
+    );
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  async function loadSettings() {
+    const { data } = await supabase.from("website_settings").select("*");
+
+    if (data) {
+      const updated = {};
+      data.forEach((item) => {
+        updated[item.key] = item.value;
+      });
+      setSettings((old) => ({ ...old, ...updated }));
+    }
+  }
+
+  async function loadUserData(currentUser) {
+    setLoading(true);
+
+    const { data: profileData } = await supabase
+      .from("Profiles")
+      .select("*")
+      .eq("id", currentUser.id)
+      .maybeSingle();
+
+    setProfile(profileData || null);
+
+    const isOwner = currentUser.id === ADMIN_ID;
+
+    const { data: adminData } = await supabase
+      .from("admin_roles")
+      .select("user_id")
+      .eq("user_id", currentUser.id)
+      .maybeSingle();
+
+    setAdmin(isOwner || !!adminData);
+
+    await Promise.all([
+      loadActivities(),
+      loadMemberRecords(currentUser.id),
+    ]);
+
+    if (isOwner || adminData) {
+      await loadAdminData();
+    }
+
+    setLoading(false);
+  }
+
+  async function loadActivities() {
+    const { data } = await supabase
+      .from("activities")
+      .select("*")
+      .eq("is_actice", true)
+      .order("created_at", { ascending: false });
+
+    setActivities(data || []);
+  }
+
+  async function loadMemberRecords(userId) {
+    const results = await Promise.all([
+      supabase
+        .from("daily_reward_claims")
+        .select("*")
+        .eq("user_id", userId)
+        .order("reward_date", { ascending: false }),
+      supabase
+        .from("daily_reward_cycles")
+        .select("*")
+        .eq("user_id", userId)
+        .order("started_at", { ascending: false }),
+      supabase
+        .from("reward_ledger")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("referral_rewards")
+        .select("*")
+        .eq("referrer_user_id", userId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("withdrawal_requests")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("membership_payments")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    setClaims(results[0].data || []);
+    setCycles(results[1].data || []);
+    setLedger(results[2].data || []);
+    setReferrals(results[3].data || []);
+    setWithdrawals(results[4].data || []);
+    setPayments(results[5].data || []);
+  }
+
+  async function loadAdminData() {
+    const results = await Promise.all([
+      supabase
+        .from("membership_payments")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("withdrawal_requests")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("Profiles")
+        .select("*")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("activities")
+        .select("*")
+        .order("created_at", { ascending: false }),
+    ]);
+
+    setPayments(results[0].data || []);
+    setWithdrawals(results[1].data || []);
+    setMembers(results[2].data || []);
+    setActivities(results[3].data || []);
+  }
+
+  function message(text) {
+    setNotice(text);
+    setTimeout(() => setNotice(""), 3500);
+  }
+
+  async function register(event) {
+    event.preventDefault();
+    setSaving(true);
+
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          username,
+          full_name: fullName,
+          referral_code: referralCode.trim(),
+        },
+      },
+    });
+
+    setSaving(false);
+
+    if (error) return message(error.message);
+
+    message("Account created. Check your email if confirmation is required.");
+    setScreen("login");
+  }
+
+  async function login(event) {
+    event.preventDefault();
+    setSaving(true);
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    setSaving(false);
+
+    if (error) return message(error.message);
+
+    message("Welcome back!");
+    setScreen("home");
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    setUser(null);
+    setProfile(null);
+    setAdmin(false);
+    setScreen("home");
+    message("You have signed out.");
+  }
+
+  async function submitPayment(event) {
+    event.preventDefault();
+
+    if (!user) return message("Please sign in first.");
+
+    const plan = PLANS.find((item) => item.id === selectedPlan);
+    if (!plan || !txHash.trim()) return message("Enter your transaction hash.");
+
+    setSaving(true);
+
+    const { error } = await supabase.from("membership_payments").insert({
+      user_id: user.id,
+      plan_id: plan.id,
+      network,
+      amount: plan.fee,
+      tx_hash: txHash.trim(),
+      status: "pending",
+    });
+
+    setSaving(false);
+
+    if (error) return message(error.message);
+
+    setTxHash("");
+    message("Payment submitted for admin review.");
+    await loadMemberRecords(user.id);
+    setScreen("home");
+  }
+
+  async function requestWithdrawal(event) {
+    event.preventDefault();
+
+    const amount = Number(withdrawAmount);
+
+    if (!amount || amount <= 0) {
+      return message("Enter a valid withdrawal amount.");
+    }
+
+    if (!walletAddress.trim()) {
+      return message("Enter your USDT wallet address.");
+    }
+
+    setSaving(true);
+
+    const { error } = await supabase.rpc("member_request_withdrawal", {
+      p_amount: amount,
+      p_wallet_address: walletAddress.trim(),
+      p_network: network,
+    });
+
+    setSaving(false);
+
+    if (error) return message(error.message);
+
+    setWithdrawAmount("");
+    setWalletAddress("");
+    message("Withdrawal request submitted.");
+    await loadMemberRecords(user.id);
+  }
+
+  async function approvePayment(paymentId) {
+    if (!window.confirm("Approve this membership payment?")) return;
+
+    const { error } = await supabase.rpc("admin_approve_membership", {
+      p_payment_id: paymentId,
+    });
+
+    if (error) return message(error.message);
+
+    message("Membership payment approved.");
+    await loadAdminData();
+  }
+
+  async function rejectPayment(paymentId) {
+    if (!window.confirm("Reject this membership payment?")) return;
+
+    const { error } = await supabase.rpc("admin_reject_membership", {
+      p_payment_id: paymentId,
+    });
+
+    if (error) return message(error.message);
+
+    message("Payment rejected.");
+    await loadAdminData();
+  }
+
+  async function approveWithdrawal(withdrawalId) {
+    if (
+      !window.confirm(
+        "Confirm that you have sent the USDT before marking this withdrawal as paid?"
+      )
+    ) return;
+
+    const { error } = await supabase.rpc("admin_approve_withdrawal", {
+      p_withdrawal_id: withdrawalId,
+    });
+
+    if (error) return message(error.message);
+
+    message("Withdrawal marked as paid.");
+    await loadAdminData();
+  }
+
+  async function rejectWithdrawal(withdrawalId) {
+    if (!window.confirm("Reject this withdrawal request?")) return;
+
+    const { error } = await supabase.rpc("admin_reject_withdrawal", {
+      p_withdrawal_id: withdrawalId,
+    });
+
+    if (error) return message(error.message);
+
+    message("Withdrawal rejected.");
+    await loadAdminData();
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    setSaving(true);
+
+    const rows = Object.entries(settings).map(([key, value]) => ({
+      key,
+      value: String(value),
+    }));
+
+    const { error } = await supabase
+      .from("website_settings")
+      .upsert(rows, { onConflict: "key" });
+
+    setSaving(false);
+
+    if (error) return message(error.message);
+
+    message("Settings saved.");
+  }
+
+  async function shareReferral() {
+    const code = profile?.Referral_code;
+
+    if (!code) return message("Your referral code is not available yet.");
+
+    const link =
+      window.location.origin + "/?ref=" + encodeURIComponent(code);
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "Join Mumbai's Pay",
+          text: "Join me on Mumbai's Pay!",
+          url: link,
+        });
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(link);
+        message("Referral link copied.");
+      } else {
+        window.prompt("Copy your referral link:", link);
+      }
+    } catch (_error) {
+      // Sharing was cancelled or unavailable.
+    }
+  }
+
+  const balance = Number(profile?.reward_balance || 0);
+  const activeCycle = cycles.find((cycle) => cycle.status === "active");
+  const plan = PLANS.find(
+    (item) =>
+      item.name.toLowerCase() ===
+      String(profile?.Membership_plan || "").toLowerCase()
+  );
+
+  const pendingPayments = payments.filter(
+    (item) => item.status === "pending"
+  );
+
+  const pendingWithdrawals = withdrawals.filter(
+    (item) => item.status === "pending"
+  );
+
+  function go(page) {
+    setScreen(page);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function Header() {
+    return (
+      <header className="top-header">
+        <div className="brand-mark">M</div>
+        <div className="brand-copy">
+          <strong>Mumbai's Pay</strong>
+          <span>Rewards made simple</span>
+        </div>
+        <button
+          className="header-action"
+          onClick={() => user ? go("profile") : go("login")}
+        >
+          {user ? "Profile" : "Sign in"}
+        </button>
+      </header>
+    );
+  }
+
+  function BottomNav() {
+    if (!user || ["login", "register", "payment"].includes(screen)) return null;
+
+    const items = [
+      { id: "home", icon: "⌂", label: "Home" },
+      { id: "earn", icon: "✦", label: "Earn" },
+      { id: "referrals", icon: "♧", label: "Invite" },
+      { id: "wallet", icon: "◈", label: "Wallet" },
+      { id: "profile", icon: "○", label: "Profile" },
+    ];
+
+    return (
+      <nav className="bottom-nav">
+        {items.map((item) => (
+          <button
+            key={item.id}
+            className={screen === item.id ? "nav-item active" : "nav-item"}
+            onClick={() => go(item.id)}
+          >
+            <span className="nav-icon">{item.icon}</span>
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </nav>
+    );
+  }
+
+  function StatCard({ label, value, detail }) {
+    return (
+      <div className="stat-card">
+        <span>{label}</span>
+        <strong>{value}</strong>
+        {detail && <small>{detail}</small>}
+      </div>
+    );
+  }
+
+  function Home() {
+    return (
+      <>
+        <section className="welcome-section">
+          <div>
+            <span className="eyebrow">YOUR REWARDS SPACE</span>
+            <h1>Hello{profile?.Username ? ", " + profile.Username : ""} 👋</h1>
+            <p>Welcome back to your Mumbai's Pay dashboard.</p>
+          </div>
+          <div className="welcome-badge">MP</div>
+        </section>
+
+        <section className="balance-card">
+          <div className="balance-top">
+            <span>Available reward balance</span>
+            <span className="live-dot">● Account</span>
+          </div>
+          <h2>{money(balance)}</h2>
+          <p>Your rewards balance</p>
+          <button className="light-button" onClick={() => go("wallet")}>
+            Open wallet →
+          </button>
+        </section>
+
+        <div className="stats-grid">
+          <StatCard
+            label="Membership"
+            value={profile?.Membership_plan || "None"}
+            detail={profile?.Membership_status || "Not active"}
+          />
+          <StatCard
+            label="Referrals"
+            value={String(referrals.length)}
+            detail="Successful referral rewards"
+          />
+        </div>
+
+        <section className="section-block">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">YOUR ACCOUNT</span>
+              <h2>Quick actions</h2>
+            </div>
+          </div>
+
+          <div className="action-grid">
+            <button className="action-card" onClick={() => go("earn")}>
+              <span className="action-icon">✦</span>
+              <strong>Earn</strong>
+              <small>Explore activities</small>
+            </button>
+            <button className="action-card" onClick={() => go("referrals")}>
+              <span className="action-icon">♧</span>
+              <strong>Invite friends</strong>
+              <small>Share your link</small>
+            </button>
+            <button className="action-card" onClick={() => go("wallet")}>
+              <span className="action-icon">◈</span>
+              <strong>Withdraw</strong>
+              <small>Manage your wallet</small>
+            </button>
+            <button className="action-card" onClick={() => go("profile")}>
+              <span className="action-icon">○</span>
+              <strong>My profile</strong>
+              <small>Account details</small>
+            </button>
+          </div>
+        </section>
+
+        <section className="section-block">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">MEMBERSHIP</span>
+              <h2>Your plan</h2>
+            </div>
+            {!profile?.Membership_status ||
+            profile.Membership_status !== "active" ? (
+              <button className="text-button" onClick={() => go("payment")}>
+                Join now →
+              </button>
+            ) : null}
+          </div>
+
+          {profile?.Membership_status === "active" ? (
+            <div className="list-card">
+              <div>
+                <strong>{profile.Membership_plan} plan</strong>
+                <p>Your membership is active.</p>
+              </div>
+              <span className="status-pill success">Active</span>
+            </div>
+          ) : (
+            <div className="list-card">
+              <div>
+                <strong>Choose your membership</strong>
+                <p>View available membership plans.</p>
+              </div>
+              <button className="small-button" onClick={() => go("payment")}>
+                View plans
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section className="section-block">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">REWARD ACTIVITY</span>
+              <h2>Recent rewards</h2>
+            </div>
+          </div>
+
+          {claims.length === 0 ? (
+            <EmptyState text="Your reward activity will appear here." />
+          ) : (
+            claims.slice(0, 4).map((item) => (
+              <div className="history-row" key={item.id}>
+                <div>
+                  <strong>Daily reward</strong>
+                  <small>{item.reward_date}</small>
+                </div>
+                <strong className="positive">
+                  +{money(item.amount)}
+                </strong>
+              </div>
+            ))
+          )}
+        </section>
+      </>
+    );
+  }
+
+  function Earn() {
+    return (
+      <>
+        <PageTitle
+          eyebrow="EARN REWARDS"
+          title="Explore activities"
+          subtitle="Browse the activities currently available."
+        />
+
+        {activeCycle && (
+          <div className="notice-card">
+            <strong>Your reward cycle is active</strong>
+            <p>
+              Rewards are processed automatically according to your
+              membership cycle.
+            </p>
+            <small>
+              Cycle ends: {new Date(activeCycle.ends_at).toLocaleDateString()}
+            </small>
+          </div>
+        )}
+
+        <div className="info-card">
+          <strong>Daily rewards</strong>
+          <p>
+            Daily membership rewards are processed automatically. You do not
+            need to submit a daily claim.
+          </p>
+        </div>
+
+        {activities.length === 0 ? (
+          <EmptyState text="There are no activities available right now." />
+        ) : (
+          activities.map((activity) => (
+            <div className="activity-card" key={activity.id}>
+              <div className="activity-icon">✦</div>
+              <div className="activity-content">
+                <strong>{activity.Title}</strong>
+                <p>{activity.description}</p>
+                <span className="reward-label">
+                  Reward: {money(activity.reward_amount)}
+                </span>
+              </div>
+            </div>
+          ))
+        )}
+      </>
+    );
+  }
+
+  function Referrals() {
+    const code = profile?.Referral_code || "Not available";
+
+    return (
+      <>
+        <PageTitle
+          eyebrow="GROW TOGETHER"
+          title="Invite friends"
+          subtitle="Share your referral link with people you know."
+        />
+
+        <div className="referral-card">
+          <span className="eyebrow">YOUR REFERRAL CODE</span>
+          <h2>{code}</h2>
+          <button className="primary-button" onClick={shareReferral}>
+            Share referral link ↗
+          </button>
+          <p>
+            Referral bonus: {money(settings.referral_bonus)} per eligible
+            referral, subject to the programme rules.
+          </p>
+        </div>
+
+        <div className="stats-grid">
+          <StatCard
+            label="Referral rewards"
+            value={String(referrals.length)}
+            detail="Recorded rewards"
+          />
+          <StatCard
+            label="Total earned"
+            value={money(
+              referrals.reduce(
+                (sum, item) => sum + Number(item.amount || 0),
+                0
+              )
+            )}
+            detail="Referral rewards"
+          />
+        </div>
+
+        <section className="section-block">
+          <h2>Referral history</h2>
+          {referrals.length === 0 ? (
+            <EmptyState text="Your referral rewards will appear here." />
+          ) : (
+            referrals.map((item) => (
+              <div className="history-row" key={item.id}>
+                <div>
+                  <strong>Referral reward</strong>
+                  <small>
+                    {new Date(item.created_at).toLocaleDateString()}
+                  </small>
+                </div>
+                <strong className="positive">+{money(item.amount)}</strong>
+              </div>
+            ))
+          )}
+        </section>
+      </>
+    );
+  }
+
+  function Wallet() {
+    return (
+      <>
+        <PageTitle
+          eyebrow="YOUR MONEY"
+          title="My wallet"
+          subtitle="View your balance and manage withdrawal requests."
+        />
+
+        <div className="balance-card">
+          <span>Available balance</span>
+          <h2>{money(balance)}</h2>
+          <p>Minimum withdrawal: {money(settings.minimum_withdrawal)}</p>
+        </div>
+
+        <section className="section-block">
+          <h2>Request a withdrawal</h2>
+          <form className="form-card" onSubmit={requestWithdrawal}>
+            <label>Amount (USDT)</label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={withdrawAmount}
+              onChange={(event) => setWithdrawAmount(event.target.value)}
+              placeholder="Enter amount"
+              required
+            />
+
+            <label>Network</label>
+            <select
+              value={network}
+              onChange={(event) => setNetwork(event.target.value)}
+            >
+              <option value="TRC20">USDT TRC20</option>
+              <option value="BEP20">USDT BEP20</option>
+            </select>
+
+            <label>USDT wallet address</label>
+            <input
+              value={walletAddress}
+              onChange={(event) => setWalletAddress(event.target.value)}
+              placeholder="Enter your receiving wallet address"
+              required
+            />
+
+            <button className="primary-button" disabled={saving}>
+              {saving ? "Submitting..." : "Submit withdrawal"}
+            </button>
+          </form>
+        </section>
+
+        <section className="section-block">
+          <h2>Withdrawal history</h2>
+          {withdrawals.length === 0 ? (
+            <EmptyState text="You have not made a withdrawal request yet." />
+          ) : (
+            withdrawals.map((item) => (
+              <div className="history-row" key={item.id}>
+                <div>
+                  <strong>{money(item.amount)}</strong>
+                  <small>
+                    {item.network} ·{" "}
+                    {new Date(item.created_at).toLocaleDateString()}
+                  </small>
+                </div>
+                <Status status={item.status} />
+              </div>
+            ))
+          )}
+        </section>
+
+        <section className="section-block">
+          <h2>Wallet history</h2>
+          {ledger.length === 0 ? (
+            <EmptyState text="Your wallet transactions will appear here." />
+          ) : (
+            ledger.map((item) => (
+              <div className="history-row" key={item.id}>
+                <div>
+                  <strong>{item.description}</strong>
+                  <small>
+                    {new Date(item.created_at).toLocaleDateString()}
+                  </small>
+                </div>
+                <strong
+                  className={
+                    Number(item.amount) >= 0 ? "positive" : "negative"
+                  }
+                >
+                  {Number(item.amount) >= 0 ? "+" : ""}
+                  {money(item.amount)}
+                </strong>
+              </div>
+            ))
+          )}
+        </section>
+      </>
+    );
+  }
+
+  function Profile() {
+    return (
+      <>
+        <PageTitle
+          eyebrow="ACCOUNT SETTINGS"
+          title="My profile"
+          subtitle="Your Mumbai's Pay account information."
+        />
+
+        <div className="profile-card">
+          <div className="profile-avatar">
+            {(profile?.Username || "M").charAt(0).toUpperCase()}
+          </div>
+          <h2>{profile?.Username || "Member"}</h2>
+          <p>{user?.email}</p>
+          <span className="status-pill success">
+            {profile?.Membership_status || "No membership"}
+          </span>
+        </div>
+
+        <div className="details-card">
+          <Detail label="Full name" value={profile?.Full_name} />
+          <Detail label="Username" value={profile?.Username} />
+          <Detail label="Referral code" value={profile?.Referral_code} />
+          <Detail label="Membership plan" value={profile?.Membership_plan} />
+          <Detail label="Account email" value={user?.email} />
+        </div>
+
+        {admin && (
+          <button
+            className="primary-button admin-button"
+            onClick={() => go("admin")}
+          >
+            Open admin dashboard
+          </button>
+        )}
+
+        <button className="outline-button logout-button" onClick={logout}>
+          Sign out
+        </button>
+      </>
+    );
+  }
+
+  function Payment() {
+    return (
+      <>
+        <PageTitle
+          eyebrow="MEMBERSHIP"
+          title="Choose your plan"
+          subtitle="Select a plan and submit your USDT transaction for review."
+        />
+
+        <div className="plan-grid">
+          {PLANS.map((item) => (
+            <button
+              key={item.id}
+              className={
+                selectedPlan === item.id ? "plan-card selected" : "plan-card"
+              }
+              onClick={() => setSelectedPlan(item.id)}
+            >
+              <span className="eyebrow">{item.name.toUpperCase()}</span>
+              <h2>{money(item.fee)}</h2>
+              <p>Membership fee</p>
+              <div className="plan-detail">
+                <span>Daily reward</span>
+                <strong>{money(item.daily)}</strong>
+              </div>
+              <div className="plan-detail">
+                <span>Duration</span>
+                <strong>{item.days} days</strong>
+              </div>
+              <div className="plan-detail">
+                <span>Total scheduled rewards</span>
+                <strong>{money(item.total)}</strong>
+              </div>
+              <small>
+                {selectedPlan === item.id ? "Selected ✓" : "Select plan"}
+              </small>
+            </button>
+          ))}
+        </div>
+
+        <form className="form-card" onSubmit={submitPayment}>
+          <h2>Submit payment</h2>
+
+          <label>Payment network</label>
+          <select
+            value={network}
+            onChange={(event) => setNetwork(event.target.value)}
+          >
+            <option value="TRC20">USDT TRC20</option>
+            <option value="BEP20">USDT BEP20</option>
+          </select>
+
+          <label>Send payment to this wallet</label>
+          <div className="wallet-address">
+            {network === "TRC20"
+              ? settings.usdt_trc20_address || "TRC20 address not configured."
+              : settings.usdt_bep20_address || "BEP20 address not configured."}
+          </div>
+
+          <label>Transaction hash</label>
+          <input
+            value={txHash}
+            onChange={(event) => setTxHash(event.target.value)}
+            placeholder="Paste your transaction hash"
+            required
+          />
+
+          <button className="primary-button" disabled={saving}>
+            {saving ? "Submitting..." : "Submit payment for review"}
+          </button>
+        </form>
+
+        <button className="outline-button" onClick={() => go("home")}>
+          Back to dashboard
+        </button>
+      </>
+    );
+  }
+
+  function Admin() {
+    if (!admin) {
+      return <EmptyState text="You do not have permission to access this page." />;
+    }
+
+    return (
+      <>
+        <PageTitle
+          eyebrow="ADMINISTRATION"
+          title="Admin dashboard"
+          subtitle="Manage memberships, withdrawals, members and settings."
+        />
+
+        <div className="admin-stats">
+          <StatCard
+            label="Members"
+            value={String(members.length)}
+          />
+          <StatCard
+            label="Pending payments"
+            value={String(pendingPayments.length)}
+          />
+          <StatCard
+            label="Pending withdrawals"
+            value={String(pendingWithdrawals.length)}
+          />
+        </div>
+
+        <div className="admin-tabs">
+          {["payments", "withdrawals", "members", "activities", "settings"].map(
+            (tab) => (
+              <button
+                key={tab}
+                className={adminTab === tab ? "tab active" : "tab"}
+                onClick={() => setAdminTab(tab)}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            )
+          )}
+        </div>
+
+        {adminTab === "payments" && (
+          <section className="section-block">
+            <h2>Membership payments</h2>
+            {payments.length === 0 && (
+              <EmptyState text="No membership payments found." />
+            )}
+            {payments.map((item) => (
+              <div className="admin-card" key={item.id}>
+                <strong>{money(item.amount)} · {item.network}</strong>
+                <p>Plan: {item.plan_id}</p>
+                <p className="hash-text">TX: {item.tx_hash}</p>
+                <Status status={item.status} />
+                {item.status === "pending" && (
+                  <div className="button-row">
+                    <button
+                      className="approve-button"
+                      onClick={() => approvePayment(item.id)}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="reject-button"
+                      onClick={() => rejectPayment(item.id)}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+
+        {adminTab === "withdrawals" && (
+          <section className="section-block">
+            <h2>Withdrawal requests</h2>
+            {withdrawals.length === 0 && (
+              <EmptyState text="No withdrawal requests found." />
+            )}
+            {withdrawals.map((item) => (
+              <div className="admin-card" key={item.id}>
+                <strong>{money(item.amount)}</strong>
+                <p>Network: {item.network}</p>
+                <p className="hash-text">Wallet: {item.wallet_address}</p>
+                <Status status={item.status} />
+                {item.status === "pending" && (
+                  <div className="button-row">
+                    <button
+                      className="approve-button"
+                      onClick={() => approveWithdrawal(item.id)}
+                    >
+                      Mark paid
+                    </button>
+                    <button
+                      className="reject-button"
+                      onClick={() => rejectWithdrawal(item.id)}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
+
+        {adminTab === "members" && (
+          <section className="section-block">
+            <h2>Registered members</h2>
+            {members.map((item) => (
+              <div className="admin-card" key={item.id}>
+                <strong>{item.Username || item.Full_name || "Member"}</strong>
+                <p>{item.Full_name}</p>
+                <p>Plan: {item.Membership_plan || "None"}</p>
+                <p>Balance: {money(item.reward_balance)}</p>
+                <Status status={item.Membership_status || "inactive"} />
+              </div>
+            ))}
+          </section>
+        )}
+
+        {adminTab === "activities" && (
+          <section className="section-block">
+            <h2>Activities</h2>
+            <p className="muted">
+              Activities are displayed here. Reward approval for activity
+              submissions is not enabled in this dashboard.
+            </p>
+            {activities.map((item) => (
+              <div className="admin-card" key={item.id}>
+                <strong>{item.Title}</strong>
+                <p>{item.description}</p>
+                <p>Reward: {money(item.reward_amount)}</p>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {adminTab === "settings" && (
+          <form className="form-card" onSubmit={saveSettings}>
+            <h2>Website settings</h2>
+
+            <label>Minimum withdrawal (USDT)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={settings.minimum_withdrawal}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  minimum_withdrawal: event.target.value,
+                })
+              }
+            />
+
+            <label>Referral bonus (USDT)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={settings.referral_bonus}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  referral_bonus: event.target.value,
+                })
+              }
+            />
+
+            <label>USDT TRC20 receiving address</label>
+            <input
+              value={settings.usdt_trc20_address}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  usdt_trc20_address: event.target.value,
+                })
+              }
+              placeholder="TRC20 address"
+            />
+
+            <label>USDT BEP20 receiving address</label>
+            <input
+              value={settings.usdt_bep20_address}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  usdt_bep20_address: event.target.value,
+                })
+              }
+              placeholder="BEP20 address"
+            />
+
+            <button className="primary-button" disabled={saving}>
+              {saving ? "Saving..." : "Save settings"}
+            </button>
+          </form>
+        )}
+      </>
+    );
+  }
+
+  function Login() {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card">
+          <span className="eyebrow">WELCOME BACK</span>
+          <h1>Sign in</h1>
+          <p>Access your Mumbai's Pay account.</p>
+          <form onSubmit={login}>
+            <label>Email address</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+            <label>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+            <button className="primary-button" disabled={saving}>
+              {saving ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+          <p>
+            New here?{" "}
+            <button className="inline-button" onClick={() => go("register")}>
+              Create an account
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  function Register() {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card">
+          <span className="eyebrow">JOIN MUMBAI'S PAY</span>
+          <h1>Create account</h1>
+          <p>Set up your member account.</p>
+          <form onSubmit={register}>
+            <label>Full name</label>
+            <input
+              value={fullName}
+              onChange={(event) => setFullName(event.target.value)}
+              required
+            />
+            <label>Username</label>
+            <input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+            />
+            <label>Email address</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+            <label>Password</label>
+            <input
+              type="password"
+              minLength="6"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+            <label>Referral code (optional)</label>
+            <input
+              value={referralCode}
+              onChange={(event) => setReferralCode(event.target.value)}
+            />
+            <button className="primary-button" disabled={saving}>
+              {saving ? "Creating account..." : "Create account"}
+            </button>
+          </form>
+          <p>
+            Already registered?{" "}
+            <button className="inline-button" onClick={() => go("login")}>
+              Sign in
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="brand-mark">M</div>
+        <strong>Mumbai's Pay</strong>
+        <p>Loading your account...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <Header />
+
+      <main className="main-content">
+        {!user && screen === "home" && (
+          <section className="landing-hero">
+            <span className="eyebrow">WELCOME TO MUMBAI'S PAY</span>
+            <h1>A simpler way to manage your rewards.</h1>
+            <p>
+              Create your account, explore membership options and manage your
+              rewards from one place.
+            </p>
+            <button className="primary-button" onClick={() => go("register")}>
+              Get started →
+            </button>
+            <button className="outline-button" onClick={() => go("login")}>
+              I already have an account
+            </button>
+            <div className="landing-features">
+              <div>✦ Reward dashboard</div>
+              <div>♧ Referral sharing</div>
+              <div>◈ Wallet management</div>
+            </div>
+          </section>
+        )}
+
+        {screen === "login" && <Login />}
+        {screen === "register" && <Register />}
+
+        {user && screen === "home" && <Home />}
+        {user && screen === "earn" && <Earn />}
+        {user && screen === "referrals" && <Referrals />}
+        {user && screen === "wallet" && <Wallet />}
+        {user && screen === "profile" && <Profile />}
+        {user && screen === "payment" && <Payment />}
+        {user && screen === "admin" && <Admin />}
+
+        {user && !profile && (
+          <div className="notice-card">
+            Your account is signed in, but your profile could not be loaded.
+            Please refresh the page or contact support.
+          </div>
+        )}
+      </main>
+
+      <BottomNav />
+
+      {notice && <div className="toast-message">{notice}</div>}
+
+      <footer className="site-footer">
+        <strong>Mumbai's Pay</strong>
+        <span>Manage your rewards in one place.</span>
+      </footer>
+    </div>
+  );
+}
+
+function PageTitle({ eyebrow, title, subtitle }) {
+  return (
+    <section className="page-title">
+      <span className="eyebrow">{eyebrow}</span>
+      <h1>{title}</h1>
+      <p>{subtitle}</p>
+    </section>
+  );
+}
+
+function EmptyState({ text }) {
+  return <div className="empty-state">{text}</div>;
+}
+
+function Status({ status }) {
+  const value = String(status || "pending").toLowerCase();
+
+  return (
+    <span className={"status-pill " + value}>
+      {value.replaceAll("_", " ")}
+    </span>
+  );
+}
+
+function Detail({ label, value }) {
+  return (
+    <div className="detail-row">
+      <span>{label}</span>
+      <strong>{value || "—"}</strong>
+    </div>
+  );
+}
