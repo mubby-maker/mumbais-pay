@@ -1,864 +1,1097 @@
-import React url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap");
-
-:root {
-  font-family: "DM Sans", sans-serif;
-  color: #182522;
-  background: #f5f8f6;
-  font-synthesis: none;
+import React, { useEffect, useState } from "react";
+import { supabase } from "./supabaseClient";
+import "./App.css";
+
+const ADMIN_ID = "ec9063ad-107e-4592-8cb4-a87c602637ba";
+
+function money(value) {
+  return "$" + Number(value || 0).toFixed(2);
+}
+
+function Status({ value }) {
+  const status = String(value || "pending").toLowerCase();
+
+  return (
+    <span className={"status-pill " + status}>
+      {status}
+    </span>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [screen, setScreen] = useState("home");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState("");
+  const [activities, setActivities] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [ledger, setLedger] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [adminTab, setAdminTab] = useState("payments");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [plan, setPlan] = useState("standard");
+  const [paymentNetwork, setPaymentNetwork] = useState("TRC20");
+  const [txHash, setTxHash] = useState("");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [walletAddress, setWalletAddress] = useState("");
+  const [withdrawNetwork, setWithdrawNetwork] = useState("TRC20");
+  const [settings, setSettings] = useState({});
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [username, setUsername] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [referralCode, setReferralCode] = useState("");
+
+  function notify(message) {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 3500);
+  }
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      if (data.session) {
+        loadUser(data.session.user);
+      } else {
+        setLoading(false);
+      }
+    });
+
+    const { data } = supabase.auth.onAuthStateChange(
+      (_event, newSession) => {
+        setSession(newSession);
+        if (newSession) {
+          loadUser(newSession.user);
+        } else {
+          setProfile(null);
+          setLoading(false);
+          setScreen("home");
+        }
+      }
+    );
+
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  async function loadUser(user) {
+    setLoading(true);
+
+    const { data: userProfile, error } = await supabase
+      .from("Profiles")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (error) notify(error.message);
+
+    setProfile(userProfile);
+
+    const adminUser = user.id === ADMIN_ID;
+
+    const { data: role } = await supabase
+      .from("admin_roles")
+      .select("user_id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    setIsAdmin(adminUser || !!role);
+
+    await loadMemberData(user.id);
+    setLoading(false);
+  }
+
+  async function loadMemberData(userId) {
+    const results = await Promise.all([
+      supabase.from("activities").select("*").eq("is_actice", true),
+      supabase.from("membership_payments").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+      supabase.from("withdrawal_requests").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+      supabase.from("reward_ledger").select("*").eq("user_id", userId).order("created_at", { ascending: false })
+    ]);
+
+    setActivities(results[0].data || []);
+    setPayments(results[1].data || []);
+    setWithdrawals(results[2].data || []);
+    setLedger(results[3].data || []);
+  }
+
+  async function refresh() {
+    if (session?.user) {
+      await loadUser(session.user);
+    }
+  }
+
+  async function signIn(event) {
+    event.preventDefault();
+    setBusy(true);
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: loginEmail,
+      password: loginPassword
+    });
+
+    setBusy(false);
+
+    if (error) notify(error.message);
+  }
+
+  async function signUp(event) {
+    event.preventDefault();
+
+    if (!username || !fullName || !loginEmail || !loginPassword) {
+      notify("Please complete all fields.");
+      return;
+    }
+
+    setBusy(true);
+
+    const { error } = await supabase.auth.signUp({
+      email: loginEmail,
+      password: loginPassword,
+      options: {
+        data: {
+          username: username,
+          full_name: fullName,
+          referral_code: referralCode
+        }
+      }
+    });
+
+    setBusy(false);
+
+    if (error) {
+      notify(error.message);
+    } else {
+      notify("Registration submitted. Check your email if confirmation is required.");
+      setScreen("login");
+    }
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setProfile(null);
+    setSession(null);
+    setScreen("home");
+  }
+
+  async function submitPayment(event) {
+    event.preventDefault();
+
+    if (!txHash.trim()) {
+      notify("Enter your transaction hash.");
+      return;
+    }
+
+    setBusy(true);
+
+    const { error } = await supabase
+      .from("membership_payments")
+      .insert({
+        user_id: session.user.id,
+        plan_id: plan,
+        network: paymentNetwork,
+        amount: plan === "premium" ? 5 : 1,
+        tx_hash: txHash.trim(),
+        status: "pending"
+      });
+
+    setBusy(false);
+
+    if (error) {
+      notify(error.message);
+    } else {
+      setTxHash("");
+      notify("Payment submitted for admin review.");
+      await refresh();
+      setScreen("wallet");
+    }
+  }
+
+  async function requestWithdrawal(event) {
+    event.preventDefault();
+
+    const amount = Number(withdrawAmount);
+
+    if (!amount || amount <= 0 || !walletAddress.trim()) {
+      notify("Enter a valid amount and wallet address.");
+      return;
+    }
+
+    setBusy(true);
+
+    const { error } = await supabase.rpc("member_request_withdrawal", {
+      p_amount: amount,
+      p_wallet_address: walletAddress.trim(),
+      p_network: withdrawNetwork
+    });
+
+    setBusy(false);
+
+    if (error) {
+      notify(error.message);
+    } else {
+      notify("Withdrawal request submitted.");
+      setWithdrawAmount("");
+      setWalletAddress("");
+      await refresh();
+    }
+  }
+
+  async function loadAdminData() {
+    const results = await Promise.all([
+      supabase.from("membership_payments").select("*").order("created_at", { ascending: false }),
+      supabase.from("withdrawal_requests").select("*").order("created_at", { ascending: false }),
+      supabase.from("Profiles").select("*").order("created_at", { ascending: false }),
+      supabase.from("website_settings").select("*")
+    ]);
+
+    setPayments(results[0].data || []);
+    setWithdrawals(results[1].data || []);
+    setMembers(results[2].data || []);
+
+    const settingObject = {};
+    (results[3].data || []).forEach((item) => {
+      settingObject[item.key] = item.value;
+    });
+
+    setSettings(settingObject);
+  }
+
+  async function adminAction(functionName, id) {
+    if (!window.confirm("Are you sure you want to perform this action?")) return;
+
+    setBusy(true);
+
+    const argumentName =
+      functionName === "admin_approve_membership" ||
+      functionName === "admin_reject_membership"
+        ? "p_payment_id"
+        : "p_withdrawal_id";
+
+    const { error } = await supabase.rpc(functionName, {
+      [argumentName]: id
+    });
+
+    setBusy(false);
+
+    if (error) {
+      notify(error.message);
+    } else {
+      notify("Action completed.");
+      await loadAdminData();
+      await refresh();
+    }
+  }
+
+  async function saveSetting(key, value) {
+    setBusy(true);
+
+    const { error } = await supabase
+      .from("website_settings")
+      .upsert({ key: key, value: value }, { onConflict: "key" });
+
+    setBusy(false);
+
+    if (error) {
+      notify(error.message);
+    } else {
+      notify("Setting saved.");
+      await loadAdminData();
+    }
+  }
+
+  async function openAdmin() {
+    if (!isAdmin) {
+      notify("Admin access only.");
+      return;
+    }
+
+    await loadAdminData();
+    setScreen("admin");
+  }
+
+  async function shareReferral() {
+    const code = profile?.Referral_code || "";
+    const link = window.location.origin + "/?ref=" + code;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "Join Mumbai's Pay",
+          text: "Join me on Mumbai's Pay!",
+          url: link
+        });
+      } catch {
+        return;
+      }
+    } else {
+      await navigator.clipboard.writeText(link);
+      notify("Referral link copied.");
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <h2>Mumbai's Pay</h2>
+        <p>Loading your account...</p>
+      </div>
+    );
+  }
+
+  const balance = Number(profile?.reward_balance || 0);
+  const referralLink =
+    window.location.origin + "/?ref=" + (profile?.Referral_code || "");
+
+  return (
+    <div className="app-shell">
+      <header className="top-header">
+        <div className="brand-mark">M</div>
+        <div className="brand-copy">
+          <strong>Mumbai's Pay</strong>
+          <span>Rewards platform</span>
+        </div>
+
+        {!session && (
+          <button className="header-action" onClick={() => setScreen("login")}>
+            Login
+          </button>
+        )}
+
+        {session && (
+          <button className="header-action" onClick={refresh}>
+            Refresh
+          </button>
+        )}
+      </header>
+
+      <main className="main-content">
+
+        {!session && screen === "home" && (
+          <div className="landing-hero">
+            <span className="eyebrow">WELCOME TO MUMBAI'S PAY</span>
+            <h1>Earn rewards with Mumbai's Pay.</h1>
+            <p>
+              Join our rewards community, explore activities,
+              invite friends and manage your rewards in one place.
+            </p>
+
+            <button className="primary-button" onClick={() => setScreen("register")}>
+              Create Account
+            </button>
+
+            <button className="outline-button" onClick={() => setScreen("login")}>
+              Login to Account
+            </button>
+
+            <div className="landing-features">
+              <div>💰 Rewards dashboard</div>
+              <div>👥 Referral programme</div>
+              <div>💳 Membership plans</div>
+            </div>
+          </div>
+        )}
+
+        {!session && screen === "login" && (
+          <div className="auth-wrap">
+            <div className="auth-card">
+              <span className="eyebrow">WELCOME BACK</span>
+              <h1>Login</h1>
+              <p>Access your Mumbai's Pay account.</p>
+
+              <form onSubmit={signIn}>
+                <label>Email address</label>
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  required
+                />
+
+                <label>Password</label>
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  required
+                />
+
+                <button className="primary-button" disabled={busy}>
+                  {busy ? "Please wait..." : "Login"}
+                </button>
+              </form>
+
+              <button className="text-button" onClick={() => setScreen("register")}>
+                Create an account
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!session && screen === "register" && (
+          <div className="auth-wrap">
+            <div className="auth-card">
+              <span className="eyebrow">JOIN OUR COMMUNITY</span>
+              <h1>Create account</h1>
+              <p>Register for Mumbai's Pay.</p>
+
+              <form onSubmit={signUp}>
+                <label>Full name</label>
+                <input
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  required
+                />
+
+                <label>Username</label>
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                />
+
+                <label>Email address</label>
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  required
+                />
+
+                <label>Password</label>
+                <input
+                  type="password"
+                  minLength="6"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  required
+                />
+
+                <label>Referral code (optional)</label>
+                <input
+                  value={referralCode}
+                  onChange={(e) => setReferralCode(e.target.value)}
+                />
+
+                <button className="primary-button" disabled={busy}>
+                  {busy ? "Please wait..." : "Register"}
+                </button>
+              </form>
+
+              <button className="text-button" onClick={() => setScreen("login")}>
+                Already registered? Login
+              </button>
+            </div>
+          </div>
+        )}
+
+        {session && (
+          <>
+            {screen === "home" && (
+              <>
+                <section className="welcome-section">
+                  <div>
+                    <span className="eyebrow">YOUR DASHBOARD</span>
+                    <h1>Hello, {profile?.Username || "Member"} 👋</h1>
+                    <p>Welcome back to Mumbai's Pay.</p>
+                  </div>
+                  <div className="welcome-badge">M</div>
+                </section>
+
+                <div className="balance-card">
+                  <div className="balance-top">
+                    <span>Available reward balance</span>
+                    <span className="live-dot">● LIVE</span>
+                  </div>
+                  <h2>{money(balance)}</h2>
+                  <p>Your current rewards balance</p>
+                  <button className="light-button" onClick={() => setScreen("wallet")}>
+                    Open Wallet
+                  </button>
+                </div>
+
+                <div className="stats-grid">
+                  <div className="stat-card">
+                    <span>Membership</span>
+                    <strong>{profile?.Membership_plan || "None"}</strong>
+                    <small>{profile?.Membership_status || "Inactive"}</small>
+                  </div>
+                  <div className="stat-card">
+                    <span>Referral code</span>
+                    <strong>{profile?.Referral_code || "—"}</strong>
+                    <small>Invite friends</small>
+                  </div>
+                </div>
+
+                <section className="section-block">
+                  <h2>Quick actions</h2>
+                  <div className="action-grid">
+                    <button className="action-card" onClick={() => setScreen("earn")}>
+                      <span className="action-icon">🎯</span>
+                      <strong>Earn rewards</strong>
+                      <small>Explore activities</small>
+                    </button>
+
+                    <button className="action-card" onClick={() => setScreen("referrals")}>
+                      <span className="action-icon">👥</span>
+                      <strong>Referrals</strong>
+                      <small>Invite your friends</small>
+                    </button>
+
+                    <button className="action-card" onClick={() => setScreen("payment")}>
+                      <span className="action-icon">💳</span>
+                      <strong>Membership</strong>
+                      <small>View membership plans</small>
+                    </button>
+
+                    <button className="action-card" onClick={() => setScreen("wallet")}>
+                      <span className="action-icon">💰</span>
+                      <strong>Withdraw</strong>
+                      <small>Manage your wallet</small>
+                    </button>
+                  </div>
+                </section>
+              </>
+            )}
+
+            {screen === "earn" && (
+              <>
+                <div className="page-title">
+                  <span className="eyebrow">REWARDS</span>
+                  <h1>Earn rewards</h1>
+                  <p>Explore available activities.</p>
+                </div>
+
+                {activities.length === 0 && (
+                  <div className="empty-state">
+                    No activities are available right now.
+                  </div>
+                )}
+
+                {activities.map((activity) => (
+                  <div className="activity-card" key={activity.id}>
+                    <div className="activity-icon">🎯</div>
+                    <div className="activity-content">
+                      <strong>{activity.Title}</strong>
+                      <p>{activity.description}</p>
+                      <span className="reward-label">
+                        Reward: {money(activity.reward_amount)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {screen === "referrals" && (
+              <>
+                <div className="page-title">
+                  <span className="eyebrow">INVITE FRIENDS</span>
+                  <h1>Your referrals</h1>
+                  <p>Share your referral code with friends.</p>
+                </div>
+
+                <div className="referral-card">
+                  <span className="eyebrow">YOUR REFERRAL CODE</span>
+                  <h2>{profile?.Referral_code || "Not available"}</h2>
+                  <button className="primary-button" onClick={shareReferral}>
+                    Share Referral Link
+                  </button>
+                  <p>{referralLink}</p>
+                </div>
+
+                <div className="info-card">
+                  <h3>Referral programme</h3>
+                  <p>
+                    Your referral bonus is subject to the programme rules
+                    and successful membership approval.
+                  </p>
+                </div>
+              </>
+            )}
+
+            {screen === "wallet" && (
+              <>
+                <div className="page-title">
+                  <span className="eyebrow">YOUR MONEY</span>
+                  <h1>My wallet</h1>
+                  <p>Manage your reward balance.</p>
+                </div>
+
+                <div className="balance-card">
+                  <span>Available balance</span>
+                  <h2>{money(balance)}</h2>
+                  <p>Current reward balance</p>
+                </div>
+
+                <div className="form-card">
+                  <h2>Request withdrawal</h2>
+                  <form onSubmit={requestWithdrawal}>
+                    <label>Amount (USDT)</label>
+                    <input
+                      type="number"
+                      min="10"
+                      step="0.01"
+                      value={withdrawAmount}
+                      onChange={(e) => setWithdrawAmount(e.target.value)}
+                      required
+                    />
+
+                    <label>Network</label>
+                    <select
+                      value={withdrawNetwork}
+                      onChange={(e) => setWithdrawNetwork(e.target.value)}
+                    >
+                      <option value="TRC20">USDT TRC20</option>
+                      <option value="BEP20">USDT BEP20</option>
+                    </select>
+
+                    <label>Wallet address</label>
+                    <input
+                      value={walletAddress}
+                      onChange={(e) => setWalletAddress(e.target.value)}
+                      required
+                    />
+
+                    <button className="primary-button" disabled={busy}>
+                      Submit withdrawal
+                    </button>
+                  </form>
+                  <p className="muted">Minimum withdrawal: $10 USDT.</p>
+                </div>
+
+                <section className="section-block">
+                  <h2>Withdrawal history</h2>
+
+                  {withdrawals.length === 0 && (
+                    <div className="empty-state">No withdrawals yet.</div>
+                  )}
+
+                  {withdrawals.map((item) => (
+                    <div className="history-row" key={item.id}>
+                      <div>
+                        <strong>{money(item.amount)}</strong>
+                        <small>{item.network}</small>
+                      </div>
+                      <Status value={item.status} />
+                    </div>
+                  ))}
+                </section>
+
+                <section className="section-block">
+                  <h2>Reward history</h2>
+
+                  {ledger.length === 0 && (
+                    <div className="empty-state">No reward transactions yet.</div>
+                  )}
+
+                  {ledger.map((item) => (
+                    <div className="history-row" key={item.id}>
+                      <div>
+                        <strong>{item.description}</strong>
+                        <small>{new Date(item.created_at).toLocaleDateString()}</small>
+                      </div>
+                      <strong className={Number(item.amount) >= 0 ? "positive" : "negative"}>
+                        {money(item.amount)}
+                      </strong>
+                    </div>
+                  ))}
+                </section>
+              </>
+            )}
+
+            {screen === "payment" && (
+              <>
+                <div className="page-title">
+                  <span className="eyebrow">MEMBERSHIP</span>
+                  <h1>Choose a plan</h1>
+                  <p>Select your membership plan.</p>
+                </div>
+
+                <div className="plan-grid">
+                  <button
+                    className={"plan-card " + (plan === "standard" ? "selected" : "")}
+                    onClick={() => setPlan("standard")}
+                  >
+                    <span className="eyebrow">STANDARD</span>
+                    <h2>$1</h2>
+                    <p>Standard membership</p>
+                    <div className="plan-detail">
+                      <span>Listed daily reward</span>
+                      <strong>$1</strong>
+                    </div>
+                    <div className="plan-detail">
+                      <span>Duration</span>
+                      <strong>30 days</strong>
+                    </div>
+                    <small>Select plan</small>
+                  </button>
+
+                  <button
+                    className={"plan-card " + (plan === "premium" ? "selected" : "")}
+                    onClick={() => setPlan("premium")}
+                  >
+                    <span className="eyebrow">PREMIUM</span>
+                    <h2>$5</h2>
+                    <p>Premium membership</p>
+                    <div className="plan-detail">
+                      <span>Listed daily reward</span>
+                      <strong>$7</strong>
+                    </div>
+                    <div className="plan-detail">
+                      <span>Duration</span>
+                      <strong>15 days</strong>
+                    </div>
+                    <small>Select plan</small>
+                  </button>
+                </div>
+
+                <div className="info-card">
+                  <h3>Payment information</h3>
+                  <p>
+                    Send the correct amount of USDT to the official
+                    wallet address provided by the administrator.
+                    Verify the network and address before sending.
+                  </p>
+                </div>
+
+                <div className="form-card">
+                  <h2>Submit payment</h2>
+                  <form onSubmit={submitPayment}>
+                    <label>Payment network</label>
+                    <select
+                      value={paymentNetwork}
+                      onChange={(e) => setPaymentNetwork(e.target.value)}
+                    >
+                      <option value="TRC20">USDT TRC20</option>
+                      <option value="BEP20">USDT BEP20</option>
+                    </select>
+
+                    <label>Transaction hash</label>
+                    <input
+                      value={txHash}
+                      onChange={(e) => setTxHash(e.target.value)}
+                      required
+                    />
+
+                    <button className="primary-button" disabled={busy}>
+                      Submit payment for review
+                    </button>
+                  </form>
+                </div>
+
+                <section className="section-block">
+                  <h2>Payment history</h2>
+
+                  {payments.length === 0 && (
+                    <div className="empty-state">No payment submissions yet.</div>
+                  )}
+
+                  {payments.map((item) => (
+                    <div className="history-row" key={item.id}>
+                      <div>
+                        <strong>{money(item.amount)}</strong>
+                        <small>{item.network}</small>
+                      </div>
+                      <Status value={item.status} />
+                    </div>
+                  ))}
+                </section>
+              </>
+            )}
+
+            {screen === "profile" && (
+              <>
+                <div className="page-title">
+                  <span className="eyebrow">ACCOUNT</span>
+                  <h1>My profile</h1>
+                </div>
+
+                <div className="profile-card">
+                  <div className="profile-avatar">
+                    {(profile?.Username || "M").charAt(0).toUpperCase()}
+                  </div>
+                  <h2>{profile?.Full_name || profile?.Username || "Member"}</h2>
+                  <p>{session.user.email}</p>
+                </div>
+
+                <div className="details-card">
+                  <div className="detail-row">
+                    <span>Username</span>
+                    <strong>{profile?.Username || "—"}</strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Membership</span>
+                    <strong>{profile?.Membership_plan || "None"}</strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Status</span>
+                    <Status value={profile?.Membership_status} />
+                  </div>
+                  <div className="detail-row">
+                    <span>Referral code</span>
+                    <strong>{profile?.Referral_code || "—"}</strong>
+                  </div>
+                </div>
+
+                {isAdmin && (
+                  <button className="outline-button" onClick={openAdmin}>
+                    Open Admin Dashboard
+                  </button>
+                )}
+
+                <button className="outline-button logout-button" onClick={signOut}>
+                  Logout
+                </button>
+              </>
+            )}
+
+            {screen === "admin" && isAdmin && (
+              <>
+                <div className="page-title">
+                  <span className="eyebrow">ADMINISTRATION</span>
+                  <h1>Admin dashboard</h1>
+                  <p>Manage membership and withdrawal requests.</p>
+                </div>
+
+                <div className="admin-tabs">
+                  {["payments", "withdrawals", "members", "settings"].map((tab) => (
+                    <button
+                      key={tab}
+                      className={"tab " + (adminTab === tab ? "active" : "")}
+                      onClick={() => setAdminTab(tab)}
+                    >
+                      {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                {adminTab === "payments" && (
+                  <>
+                    {payments.length === 0 && (
+                      <div className="empty-state">No payment requests.</div>
+                    )}
+
+                    {payments.map((item) => (
+                      <div className="admin-card" key={item.id}>
+                        <strong>{money(item.amount)} — {item.network}</strong>
+                        <p className="hash-text">Transaction: {item.tx_hash}</p>
+                        <p>User ID: {item.user_id}</p>
+                        <Status value={item.status} />
+
+                        {item.status === "pending" && (
+                          <div className="button-row">
+                            <button
+                              className="approve-button"
+                              disabled={busy}
+                              onClick={() => adminAction("admin_approve_membership", item.id)}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              className="reject-button"
+                              disabled={busy}
+                              onClick={() => adminAction("admin_reject_membership", item.id)}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                {adminTab === "withdrawals" && (
+                  <>
+                    {withdrawals.length === 0 && (
+                      <div className="empty-state">No withdrawal requests.</div>
+                    )}
+
+                    {withdrawals.map((item) => (
+                      <div className="admin-card" key={item.id}>
+                        <strong>{money(item.amount)}</strong>
+                        <p>{item.network}</p>
+                        <p className="hash-text">Wallet: {item.wallet_address}</p>
+                        <p>User ID: {item.user_id}</p>
+                        <Status value={item.status} />
+
+                        {item.status === "pending" && (
+                          <div className="button-row">
+                            <button
+                              className="approve-button"
+                              disabled={busy}
+                              onClick={() => adminAction("admin_approve_withdrawal", item.id)}
+                            >
+                              Mark paid
+                            </button>
+                            <button
+                              className="reject-button"
+                              disabled={busy}
+                              onClick={() => adminAction("admin_reject_withdrawal", item.id)}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                {adminTab === "members" && (
+                  <>
+                    {members.map((member) => (
+                      <div className="admin-card" key={member.id}>
+                        <strong>{member.Full_name || member.Username}</strong>
+                        <p>Username: {member.Username}</p>
+                        <p>User ID: {member.id}</p>
+                        <p>Balance: {money(member.reward_balance)}</p>
+                        <Status value={member.Membership_status} />
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                {adminTab === "settings" && (
+                  <div className="form-card">
+                    <h2>Website settings</h2>
+
+                    <label>USDT TRC20 address</label>
+                    <input
+                      id="trcAddress"
+                      defaultValue={settings.usdt_trc20_address || ""}
+                    />
+                    <button
+                      className="primary-button"
+                      onClick={() =>
+                        saveSetting(
+                          "usdt_trc20_address",
+                          document.getElementById("trcAddress").value
+                        )
+                      }
+                    >
+                      Save TRC20 address
+                    </button>
+
+                    <label>USDT BEP20 address</label>
+                    <input
+                      id="bepAddress"
+                      defaultValue={settings.usdt_bep20_address || ""}
+                    />
+                    <button
+                      className="primary-button"
+                      onClick={() =>
+                        saveSetting(
+                          "usdt_bep20_address",
+                          document.getElementById("bepAddress").value
+                        )
+                      }
+                    >
+                      Save BEP20 address
+                    </button>
+
+                    <label>Minimum withdrawal</label>
+                    <input
+                      id="minimumWithdrawal"
+                      type="number"
+                      defaultValue={settings.minimum_withdrawal || "10.00"}
+                    />
+                    <button
+                      className="primary-button"
+                      onClick={() =>
+                        saveSetting(
+                          "minimum_withdrawal",
+                          document.getElementById("minimumWithdrawal").value
+                        )
+                      }
+                    >
+                      Save minimum withdrawal
+                    </button>
+
+                    <label>Referral bonus</label>
+                    <input
+                      id="referralBonus"
+                      type="number"
+                      defaultValue={settings.referral_bonus || "0.50"}
+                    />
+                    <button
+                      className="primary-button"
+                      onClick={() =>
+                        saveSetting(
+                          "referral_bonus",
+                          document.getElementById("referralBonus").value
+                        )
+                      }
+                    >
+                      Save referral bonus
+                    </button>
+                  </div>
+                )}
+
+                <button className="outline-button" onClick={() => setScreen("profile")}>
+                  Back to profile
+                </button>
+              </>
+            )}
+          </>
+        )}
+
+        {session && screen !== "admin" && (
+          <footer className="site-footer">
+            <strong>Mumbai's Pay</strong>
+            <span>Rewards dashboard</span>
+          </footer>
+        )}
+      </main>
+
+      {session && !["payment", "login", "register"].includes(screen) && (
+        <nav className="bottom-nav">
+          <button
+            className={"nav-item " + (screen === "home" ? "active" : "")}
+            onClick={() => setScreen("home")}
+          >
+            <span className="nav-icon">⌂</span>
+            Home
+          </button>
+
+          <button
+            className={"nav-item " + (screen === "earn" ? "active" : "")}
+            onClick={() => setScreen("earn")}
+          >
+            <span className="nav-icon">◎</span>
+            Earn
+          </button>
+
+          <button
+            className={"nav-item " + (screen === "referrals" ? "active" : "")}
+            onClick={() => setScreen("referrals")}
+          >
+            <span className="nav-icon">♧</span>
+            Referrals
+          </button>
+
+          <button
+            className={"nav-item " + (screen === "wallet" ? "active" : "")}
+            onClick={() => setScreen("wallet")}
+          >
+            <span className="nav-icon">▣</span>
+            Wallet
+          </button>
+
+          <button
+            className={"nav-item " + (screen === "profile" ? "active" : "")}
+            onClick={() => setScreen("profile")}
+          >
+            <span className="nav-icon">♙</span>
+            Profile
+          </button>
+        </nav>
+      )}
+
+      {toast && <div className="toast-message">{toast}</div>}
+    </div>
+  );
 }
-
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  background: #f5f8f6;
-}
-
-button,
-input,
-select {
-  font: inherit;
-}
-
-button {
-  cursor: pointer;
-}
-
-.app-shell {
-  width: 100%;
-  max-width: 560px;
-  min-height: 100vh;
-  margin: 0 auto;
-  background: #f5f8f6;
-  padding-bottom: 95px;
-}
-
-.top-header {
-  height: 72px;
-  padding: 0 20px;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  background: #ffffff;
-  border-bottom: 1px solid #e9efeb;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.brand-mark {
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  background: #087f5b;
-  color: white;
-  display: grid;
-  place-items: center;
-  font-size: 22px;
-  font-weight: 800;
-}
-
-.brand-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-
-.brand-copy strong {
-  font-size: 15px;
-}
-
-.brand-copy span {
-  font-size: 11px;
-  color: #82918a;
-}
-
-.header-action {
-  border: 0;
-  border-radius: 20px;
-  padding: 9px 14px;
-  background: #e8f5ef;
-  color: #087f5b;
-  font-weight: 700;
-  font-size: 12px;
-}
-
-.main-content {
-  padding: 22px 18px 30px;
-  min-height: 65vh;
-}
-
-.welcome-section {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 8px 0 22px;
-}
-
-.welcome-section h1,
-.page-title h1 {
-  margin: 7px 0;
-  font-size: 27px;
-  letter-spacing: -1px;
-  line-height: 1.2;
-}
-
-.welcome-section p,
-.page-title p {
-  margin: 0;
-  color: #7b8982;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.welcome-badge {
-  width: 52px;
-  height: 52px;
-  border-radius: 18px;
-  display: grid;
-  place-items: center;
-  color: #087f5b;
-  background: #dff4e9;
-  font-weight: 800;
-}
-
-.eyebrow {
-  color: #07936a;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1.4px;
-}
-
-.balance-card {
-  background: linear-gradient(135deg, #087f5b, #05a879);
-  color: #ffffff;
-  border-radius: 23px;
-  padding: 23px;
-  margin: 18px 0;
-  box-shadow: 0 12px 28px rgba(8, 127, 91, 0.15);
-}
-
-.balance-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  opacity: 0.9;
-}
-
-.live-dot {
-  font-size: 10px;
-}
-
-.balance-card h2 {
-  font-size: 35px;
-  margin: 17px 0 4px;
-  letter-spacing: -1px;
-}
-
-.balance-card p {
-  margin: 0 0 18px;
-  font-size: 12px;
-  opacity: 0.8;
-}
-
-.light-button {
-  background: #ffffff;
-  color: #087f5b;
-  border: 0;
-  border-radius: 12px;
-  padding: 11px 16px;
-  font-weight: 800;
-  font-size: 12px;
-}
-
-.stats-grid,
-.admin-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin: 16px 0 25px;
-}
-
-.stat-card {
-  background: #ffffff;
-  border: 1px solid #e9efeb;
-  border-radius: 17px;
-  padding: 16px;
-  min-width: 0;
-}
-
-.stat-card span,
-.stat-card small {
-  display: block;
-  color: #82918a;
-  font-size: 11px;
-}
-
-.stat-card strong {
-  display: block;
-  font-size: 20px;
-  margin: 9px 0 4px;
-  overflow-wrap: anywhere;
-}
-
-.section-block {
-  margin: 27px 0;
-}
-
-.section-block h2,
-.section-heading h2 {
-  font-size: 18px;
-  margin: 5px 0 13px;
-}
-
-.section-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.action-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.action-card {
-  border: 1px solid #e9efeb;
-  background: #ffffff;
-  border-radius: 17px;
-  padding: 17px;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  color: #182522;
-}
-
-.action-icon {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: #e7f6ed;
-  color: #07865f;
-  font-size: 19px;
-}
-
-.action-card strong {
-  font-size: 13px;
-}
-
-.action-card small {
-  color: #87948e;
-  font-size: 10px;
-}
-
-.text-button,
-.inline-button {
-  border: 0;
-  background: none;
-  color: #07865f;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.list-card,
-.info-card,
-.notice-card {
-  background: #ffffff;
-  border: 1px solid #e7eee9;
-  border-radius: 16px;
-  padding: 17px;
-  margin: 13px 0;
-}
-
-.list-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.list-card p,
-.info-card p,
-.notice-card p {
-  color: #82918a;
-  font-size: 12px;
-  line-height: 1.6;
-  margin: 6px 0 0;
-}
-
-.small-button {
-  border: 0;
-  background: #e8f5ef;
-  color: #087f5b;
-  padding: 9px 12px;
-  border-radius: 10px;
-  font-weight: 800;
-  font-size: 11px;
-}
-
-.page-title {
-  padding: 10px 0 17px;
-}
-
-.bottom-nav {
-  position: fixed;
-  z-index: 20;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 100%;
-  max-width: 560px;
-  height: 76px;
-  display: flex;
-  justify-content: space-around;
-  align-items: center;
-  background: rgba(255, 255, 255, 0.97);
-  border-top: 1px solid #e6eee9;
-  padding: 5px 8px env(safe-area-inset-bottom);
-}
-
-.nav-item {
-  border: 0;
-  background: none;
-  color: #9aa69f;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-width: 55px;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.nav-icon {
-  font-size: 22px;
-  line-height: 1;
-}
-
-.nav-item.active {
-  color: #07865f;
-}
-
-.primary-button {
-  width: 100%;
-  background: #087f5b;
-  color: #ffffff;
-  border: 0;
-  border-radius: 13px;
-  padding: 14px 17px;
-  font-weight: 800;
-  font-size: 13px;
-  margin-top: 12px;
-}
-
-.primary-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.outline-button {
-  width: 100%;
-  background: #ffffff;
-  border: 1px solid #dce8e0;
-  color: #087f5b;
-  border-radius: 13px;
-  padding: 13px;
-  font-weight: 800;
-  font-size: 12px;
-  margin-top: 12px;
-}
-
-.form-card,
-.auth-card {
-  background: #ffffff;
-  border: 1px solid #e7eee9;
-  border-radius: 19px;
-  padding: 20px;
-  margin: 15px 0;
-}
-
-.form-card h2 {
-  font-size: 18px;
-  margin: 0 0 17px;
-}
-
-label {
-  display: block;
-  font-size: 11px;
-  color: #52635a;
-  font-weight: 700;
-  margin: 15px 0 7px;
-}
-
-input,
-select {
-  width: 100%;
-  border: 1px solid #dfe9e3;
-  border-radius: 11px;
-  background: #fbfdfb;
-  color: #182522;
-  padding: 13px;
-  outline: none;
-  font-size: 13px;
-}
-
-input:focus,
-select:focus {
-  border-color: #07936a;
-  box-shadow: 0 0 0 3px rgba(7, 147, 106, 0.08);
-}
-
-.wallet-address {
-  overflow-wrap: anywhere;
-  padding: 13px;
-  border-radius: 11px;
-  background: #eff7f2;
-  color: #087f5b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.history-row,
-.detail-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  background: #ffffff;
-  border: 1px solid #e9efeb;
-  border-radius: 13px;
-  padding: 14px;
-  margin: 9px 0;
-}
-
-.history-row strong,
-.detail-row strong {
-  font-size: 12px;
-}
-
-.history-row small {
-  display: block;
-  color: #87948e;
-  font-size: 10px;
-  margin-top: 5px;
-}
-
-.positive {
-  color: #07865f;
-}
-
-.negative {
-  color: #d44e4e;
-}
-
-.empty-state {
-  background: #ffffff;
-  border: 1px dashed #d9e6dd;
-  border-radius: 15px;
-  padding: 22px 15px;
-  text-align: center;
-  color: #8a9890;
-  font-size: 12px;
-  line-height: 1.6;
-  margin: 13px 0;
-}
-
-.status-pill {
-  display: inline-block;
-  border-radius: 20px;
-  padding: 6px 9px;
-  background: #edf1ef;
-  color: #6b7770;
-  font-size: 9px;
-  font-weight: 800;
-  text-transform: capitalize;
-}
-
-.status-pill.success,
-.status-pill.active,
-.status-pill.approved,
-.status-pill.paid {
-  background: #e2f6eb;
-  color: #07865f;
-}
-
-.status-pill.pending {
-  background: #fff3d9;
-  color: #a66c0b;
-}
-
-.status-pill.rejected,
-.status-pill.inactive {
-  background: #ffeded;
-  color: #bd4545;
-}
-
-.activity-card {
-  display: flex;
-  gap: 13px;
-  background: #ffffff;
-  border: 1px solid #e8efea;
-  border-radius: 16px;
-  padding: 16px;
-  margin: 12px 0;
-}
-
-.activity-icon {
-  flex: 0 0 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: #e5f5eb;
-  color: #07865f;
-}
-
-.activity-content {
-  min-width: 0;
-}
-
-.activity-content strong {
-  font-size: 13px;
-}
-
-.activity-content p {
-  font-size: 11px;
-  color: #82918a;
-  line-height: 1.6;
-}
-
-.reward-label {
-  font-size: 11px;
-  color: #07865f;
-  font-weight: 800;
-}
-
-.referral-card {
-  border-radius: 21px;
-  padding: 23px;
-  color: #ffffff;
-  background: linear-gradient(135deg, #087f5b, #08a879);
-  text-align: center;
-  margin: 15px 0;
-}
-
-.referral-card .eyebrow {
-  color: #d8f6e8;
-}
-
-.referral-card h2 {
-  font-size: 29px;
-  letter-spacing: 2px;
-  margin: 13px 0;
-  overflow-wrap: anywhere;
-}
-
-.referral-card .primary-button {
-  background: #ffffff;
-  color: #087f5b;
-}
-
-.referral-card p {
-  font-size: 11px;
-  line-height: 1.6;
-  opacity: 0.85;
-  margin: 15px 0 0;
-}
-
-.profile-card {
-  text-align: center;
-  background: #ffffff;
-  border: 1px solid #e7eee9;
-  border-radius: 19px;
-  padding: 24px;
-  margin: 15px 0;
-}
-
-.profile-avatar {
-  width: 65px;
-  height: 65px;
-  border-radius: 22px;
-  background: #e2f5e9;
-  color: #087f5b;
-  display: grid;
-  place-items: center;
-  font-size: 26px;
-  font-weight: 800;
-  margin: 0 auto;
-}
-
-.profile-card h2 {
-  margin: 12px 0 5px;
-}
-
-.profile-card p {
-  color: #87948e;
-  font-size: 12px;
-}
-
-.details-card {
-  background: #ffffff;
-  border: 1px solid #e7eee9;
-  border-radius: 16px;
-  padding: 7px 14px;
-}
-
-.detail-row {
-  border: 0;
-  border-bottom: 1px solid #edf1ee;
-  border-radius: 0;
-  margin: 0;
-  padding: 14px 2px;
-}
-
-.detail-row:last-child {
-  border-bottom: 0;
-}
-
-.detail-row span {
-  color: #82918a;
-  font-size: 11px;
-}
-
-.logout-button {
-  color: #c34d4d;
-}
-
-.plan-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 11px;
-}
-
-.plan-card {
-  text-align: left;
-  border: 1px solid #e1eae4;
-  background: #ffffff;
-  border-radius: 16px;
-  padding: 14px;
-  color: #182522;
-}
-
-.plan-card.selected {
-  border: 2px solid #07865f;
-  background: #f0faf4;
-}
-
-.plan-card h2 {
-  font-size: 25px;
-  margin: 12px 0 0;
-}
-
-.plan-card p {
-  color: #87948e;
-  font-size: 10px;
-  margin: 3px 0 15px;
-}
-
-.plan-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  border-top: 1px solid #e9efeb;
-  padding: 9px 0;
-}
-
-.plan-detail span {
-  color: #87948e;
-  font-size: 9px;
-}
-
-.plan-detail strong {
-  font-size: 11px;
-}
-
-.plan-card > small {
-  color: #07865f;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.admin-tabs {
-  display: flex;
-  gap: 7px;
-  overflow-x: auto;
-  padding: 3px 0 12px;
-}
-
-.tab {
-  border: 1px solid #e0e9e3;
-  background: #ffffff;
-  color: #718078;
-  border-radius: 20px;
-  padding: 9px 13px;
-  white-space: nowrap;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.tab.active {
-  background: #087f5b;
-  color: #ffffff;
-  border-color: #087f5b;
-}
-
-.admin-card {
-  background: #ffffff;
-  border: 1px solid #e7eee9;
-  border-radius: 15px;
-  padding: 15px;
-  margin: 12px 0;
-}
-
-.admin-card > strong {
-  font-size: 13px;
-}
-
-.admin-card p {
-  color: #82918a;
-  font-size: 11px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.hash-text {
-  overflow-wrap: anywhere;
-}
-
-.button-row {
-  display: flex;
-  gap: 9px;
-  margin-top: 13px;
-}
-
-.approve-button,
-.reject-button {
-  flex: 1;
-  border: 0;
-  border-radius: 10px;
-  padding: 11px;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.approve-button {
-  background: #e3f6eb;
-  color: #087f5b;
-}
-
-.reject-button {
-  background: #ffeded;
-  color: #bd4545;
-}
-
-.auth-wrap {
-  min-height: 65vh;
-  display: flex;
-  align-items: center;
-}
-
-.auth-card {
-  width: 100%;
-  padding: 24px;
-}
-
-.auth-card h1 {
-  font-size: 28px;
-  margin: 9px 0;
-}
-
-.auth-card > p {
-  color: #87948e;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.auth-card form {
-  margin: 20px 0;
-}
-
-.landing-hero {
-  padding: 36px 5px;
-}
-
-.landing-hero h1 {
-  max-width: 430px;
-  font-size: 39px;
-  letter-spacing: -1.8px;
-  line-height: 1.12;
-  margin: 15px 0;
-}
-
-.landing-hero > p {
-  color: #82918a;
-  font-size: 14px;
-  line-height: 1.7;
-  margin-bottom: 25px;
-}
-
-.landing-features {
-  display: grid;
-  gap: 12px;
-  margin-top: 32px;
-}
-
-.landing-features div {
-  background: #ffffff;
-  border: 1px solid #e7eee9;
-  border-radius: 13px;
-  padding: 15px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.toast-message {
-  position: fixed;
-  z-index: 50;
-  bottom: 88px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: calc(100% - 36px);
-  max-width: 500px;
-  background: #182d26;
-  color: #ffffff;
-  padding: 14px 17px;
-  border-radius: 13px;
-  text-align: center;
-  font-size: 12px;
-  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.16);
-}
-
-.site-footer {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  color: #89968f;
-  font-size: 10px;
-}
-
-.site-footer strong {
-  color: #087f5b;
-  font-size: 12px;
-}
-
-.muted {
-  color: #82918a;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.loading-screen {
-  min-height: 
