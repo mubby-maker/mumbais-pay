@@ -239,12 +239,12 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => navigateTo('admin')}
-                    className={`px-4 py-2 rounded-lg font-medium text-sm transition whitespace-nowrap ${
-                      currentView === 'admin'
-                        ? 'bg-emerald-500 text-slate-950 font-bold'
-                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                    }`}
-                  >
+                    className={
+  "px-4 py-2 rounded-lg font-medium text-sm transition whitespace-nowrap " +
+  (currentView === "admin"
+    ? "bg-emerald-500 text-slate-950 font-bold"
+    : "bg-slate-800 text-slate-300 hover:bg-slate-700")
+}
                     Admin Panel
                   </button>
                 )}
